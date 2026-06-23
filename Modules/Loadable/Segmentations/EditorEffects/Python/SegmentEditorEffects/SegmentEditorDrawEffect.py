@@ -93,10 +93,8 @@ class SegmentEditorDrawEffect(AbstractScriptedSegmentEditorLabelEffect):
             pipeline.actionState = "finishing"
             sliceNode = viewWidget.sliceLogic().GetSliceNode()
             pipeline.lastInsertSliceNodeMTime = sliceNode.GetMTime()
-            abortEvent = True
         elif ((eventId == vtk.vtkCommand.RightButtonReleaseEvent and pipeline.actionState == "finishing")
               or (eventId == vtk.vtkCommand.LeftButtonDoubleClickEvent and not anyModifierKeyPressed)):
-            abortEvent = (pipeline.rasPoints.GetNumberOfPoints() > 1)
             sliceNode = viewWidget.sliceLogic().GetSliceNode()
             if abs(pipeline.lastInsertSliceNodeMTime - sliceNode.GetMTime()) < 2:
                 pipeline.apply()
