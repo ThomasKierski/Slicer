@@ -64,9 +64,76 @@ plotView.saveAsSVG("c:/tmp/test.svg")
 
 ### Using matplotlib
 
-Matplotlib may be used from within Slicer, but the default Tk backend locks up and crashes Slicer. However, Matplotlib may still be used through other backends. More details can be found on the [MatPlotLib](https://matplotlib.org/) pages.
+Matplotlib may be used from within Slicer. Slicer is built without Tcl/Tk, so the default
+`TkAgg` backend is unavailable, and Slicer binds Qt through
+[PythonQt](https://mevislab.github.io/pythonqt/) rather than PyQt or PySide, so
+Matplotlib's own `QtAgg` backend cannot be used either. Do not install PyQt or PySide into
+Slicer's Python to work around this: doing so loads a second, independently initialized
+copy of the Qt libraries into a process that has already initialized Slicer's own Qt,
+which is unstable.
+
+Instead, Slicer provides a built-in interactive backend, `slicer.matplotlibbackend`, which
+renders with Agg and displays the result in a Qt widget driven by Slicer's own event loop.
+Use `Agg` when you only need to render an image file. More details can be found on the
+[MatPlotLib](https://matplotlib.org/) pages.
+
+#### Interactive plot
+
+```python
+try:
+  import matplotlib
+except ModuleNotFoundError:
+  slicer.packaging.pip_install("matplotlib")
+  import matplotlib
+
+# Select Slicer's interactive backend and enable interactive mode.
+import slicer.matplotlibbackend
+slicer.matplotlibbackend.enable()
+
+# Get a volume from SampleData and compute its histogram
+import SampleData
+import numpy as np
+volumeNode = SampleData.SampleDataLogic().downloadMRHead()
+histogram = np.histogram(slicer.util.arrayFromVolume(volumeNode), bins=50)
+
+# Show an interactive plot: pan, zoom, and the navigation toolbar all work.
+import matplotlib.pyplot as plt
+fig, ax = plt.subplots()
+ax.plot(histogram[1][1:], histogram[0].astype(float))
+ax.grid(True)
+ax.set_ylim((0, 4e5))
+plt.show()
+```
+
+Because Slicer's application event loop is always running, `plt.show()` returns
+immediately and never blocks the application.
+
+#### Embed a plot in a module panel
+
+The canvas is an ordinary Qt widget, so it can be added to any layout, for example in the
+`setup()` method of a scripted module:
+
+```python
+from matplotlib.figure import Figure
+from slicer.matplotlibbackend import FigureCanvasSlicer, NavigationToolbar2Slicer
+
+figure = Figure()
+ax = figure.add_subplot(111)
+ax.plot([0, 1, 2], [0, 1, 0])
+
+canvas = FigureCanvasSlicer(figure)
+toolbar = NavigationToolbar2Slicer(canvas)
+
+self.layout.addWidget(canvas.get_widget())
+self.layout.addWidget(toolbar.get_widget())
+```
+
+Keep a reference to `canvas` (for example on `self`) for as long as the plot is displayed.
+Call `canvas.draw_idle()` after modifying the figure to schedule a repaint.
 
 #### Non-interactive plot
+
+Use the `Agg` backend to render a figure to an image file without showing a window:
 
 ```python
 try:
@@ -153,6 +220,12 @@ slicernb.MatplotlibDisplay(matplotlib.pyplot)
 
 
 #### Interactive plot using wxWidgets GUI toolkit
+
+:::{note}
+This approach predates the built-in `slicer.matplotlibbackend` described above, which is
+now the recommended way to create interactive plots. `WXAgg` requires the additional
+wxPython dependency and can only show figures in separate top-level windows.
+:::
 
 ```python
 try:
