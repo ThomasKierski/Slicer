@@ -252,6 +252,226 @@ slicer.modules.SliceHistogramPlotDemo.addToPlotView()
 Call `slicer.modules.SliceHistogramPlotDemo.removeFromPlotView()` to remove the observer
 and restore the regular VTK plot view.
 
+#### Segment statistics with seaborn
+
+[Seaborn](https://seaborn.pydata.org/) draws statistical plots on top of Matplotlib, so it
+works with the interactive backend as-is. It needs `pandas`, which is installed alongside
+it by `slicer.packaging.pip_install("seaborn pandas")`.
+
+This example segments MRHead into three tissue classes using only built-in Segment Editor
+effects (`Threshold`, `Smoothing`, `Islands`, `Margin` and `Logical operators`), computes
+statistics with the `SegmentStatistics` module, and shows them as an interactive seaborn
+dashboard in the plot pane of the `Four-Up Plot` layout. The plot colors are taken from
+the segments themselves, so they match the slice views.
+
+```python
+import numpy as np
+import slicer
+import SampleData
+import SegmentStatistics
+
+try:
+    import seaborn as sns
+except ModuleNotFoundError:
+    slicer.packaging.pip_install("seaborn pandas")
+    import seaborn as sns
+
+import pandas as pd
+
+import slicer.matplotlibbackend
+
+slicer.matplotlibbackend.enable()
+
+from matplotlib.figure import Figure
+from slicer.matplotlibbackend import FigureCanvasSlicer, NavigationToolbar2Slicer
+
+
+def buildTissueSegmentation(volumeNode):
+    """Create Brain / Skull and scalp / Background with built-in Segment Editor effects."""
+    segmentationNode = slicer.mrmlScene.AddNewNodeByClass(
+        "vtkMRMLSegmentationNode", "MRHead tissues")
+    segmentationNode.CreateDefaultDisplayNodes()
+    segmentationNode.SetReferenceImageGeometryParameterFromVolumeNode(volumeNode)
+    segmentation = segmentationNode.GetSegmentation()
+
+    segmentEditorWidget = slicer.qMRMLSegmentEditorWidget()
+    segmentEditorWidget.setMRMLScene(slicer.mrmlScene)
+    segmentEditorNode = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLSegmentEditorNode")
+    segmentEditorWidget.setMRMLSegmentEditorNode(segmentEditorNode)
+    segmentEditorWidget.setSegmentationNode(segmentationNode)
+    segmentEditorWidget.setSourceVolumeNode(volumeNode)
+
+    def applyEffect(segmentId, effectName, **parameters):
+        segmentEditorNode.SetSelectedSegmentID(segmentId)
+        segmentEditorWidget.setActiveEffectByName(effectName)
+        effect = segmentEditorWidget.activeEffect()
+        for name, value in parameters.items():
+            effect.setParameter(name, str(value))
+        effect.self().onApply()
+
+    # Two scaffold segments, removed once the real segments are built.
+    # "Image" covers every voxel so that "Background" stays inside the image.
+    imageId = segmentation.AddEmptySegment("", "Image")
+    applyEffect(imageId, "Threshold", MinimumThreshold=-10000, MaximumThreshold=10000)
+
+    # "Head" is everything above the noise floor, closed up and de-speckled.
+    headId = segmentation.AddEmptySegment("", "Head")
+    applyEffect(headId, "Threshold", MinimumThreshold=30, MaximumThreshold=10000)
+    applyEffect(headId, "Smoothing", SmoothingMethod="MORPHOLOGICAL_CLOSING", KernelSizeMm=5)
+    applyEffect(headId, "Islands", Operation="KEEP_LARGEST_ISLAND")
+
+    # "Brain": the interior of the head, shrunk away from the skull.
+    brainId = segmentation.AddEmptySegment("", "Brain")
+    applyEffect(brainId, "Logical operators", Operation="COPY", ModifierSegmentID=headId)
+    applyEffect(brainId, "Margin", MarginSizeMm=-15)
+    applyEffect(brainId, "Islands", Operation="KEEP_LARGEST_ISLAND")
+
+    # "Skull and scalp": the outer shell that is left over.
+    shellId = segmentation.AddEmptySegment("", "Skull and scalp")
+    applyEffect(shellId, "Logical operators", Operation="COPY", ModifierSegmentID=headId)
+    applyEffect(shellId, "Logical operators", Operation="SUBTRACT", ModifierSegmentID=brainId)
+
+    # "Background": the air around the head, clipped to the image.
+    backgroundId = segmentation.AddEmptySegment("", "Background")
+    applyEffect(backgroundId, "Logical operators", Operation="COPY", ModifierSegmentID=imageId)
+    applyEffect(backgroundId, "Logical operators", Operation="SUBTRACT", ModifierSegmentID=headId)
+
+    segmentation.RemoveSegment(headId)
+    segmentation.RemoveSegment(imageId)
+    segmentEditorWidget.setActiveEffectByName(None)
+    segmentEditorWidget = None
+    slicer.mrmlScene.RemoveNode(segmentEditorNode)
+
+    return segmentationNode, [brainId, shellId, backgroundId]
+
+
+def collectStatistics(segmentationNode, volumeNode, segmentIds, maxSamples=20000):
+    """Return a per-segment summary table and a table of sampled voxel intensities."""
+    statisticsLogic = SegmentStatistics.SegmentStatisticsLogic()
+    parameterNode = statisticsLogic.getParameterNode()
+    parameterNode.SetParameter("Segmentation", segmentationNode.GetID())
+    parameterNode.SetParameter("ScalarVolume", volumeNode.GetID())
+    parameterNode.SetParameter("LabelmapSegmentStatisticsPlugin.enabled", "True")
+    parameterNode.SetParameter("ScalarVolumeSegmentStatisticsPlugin.enabled", "True")
+    statisticsLogic.computeStatistics()
+    statistics = statisticsLogic.getStatistics()
+
+    segmentation = segmentationNode.GetSegmentation()
+    names = {i: segmentation.GetSegment(i).GetName() for i in segmentIds}
+
+    summary = pd.DataFrame([
+        {
+            "Segment": names[i],
+            "Volume (cm3)": statistics[i, "LabelmapSegmentStatisticsPlugin.volume_mm3"] / 1000.0,
+            "Mean": statistics[i, "ScalarVolumeSegmentStatisticsPlugin.mean"],
+            "Median": statistics[i, "ScalarVolumeSegmentStatisticsPlugin.median"],
+            "Std. dev.": statistics[i, "ScalarVolumeSegmentStatisticsPlugin.stdev"],
+        }
+        for i in segmentIds
+    ])
+
+    rng = np.random.default_rng(0)
+    volumeArray = slicer.util.arrayFromVolume(volumeNode)
+    samples = []
+    for i in segmentIds:
+        mask = slicer.util.arrayFromSegmentBinaryLabelmap(segmentationNode, i, volumeNode)
+        intensities = volumeArray[mask > 0]
+        if intensities.size > maxSamples:
+            intensities = rng.choice(intensities, maxSamples, replace=False)
+        samples.append(pd.DataFrame({"Segment": names[i],
+                                     "Intensity": intensities.astype(float)}))
+    voxels = pd.concat(samples, ignore_index=True)
+
+    palette = {names[i]: segmentation.GetSegment(i).GetColor() for i in segmentIds}
+    return summary, voxels, palette
+
+
+class SegmentStatisticsPlot:
+    """Seaborn dashboard of segment statistics, shown in the Four-Up Plot layout."""
+
+    def __init__(self, summary, voxels, palette):
+        # "paper" context keeps the labels readable in a small layout pane.
+        sns.set_theme(style="whitegrid", context="paper")
+        self.figure = Figure(constrained_layout=True)
+        self.canvas = FigureCanvasSlicer(self.figure)
+        self.toolbar = NavigationToolbar2Slicer(self.canvas)
+        # Let the Slicer layout drive the size instead of the figure size.
+        self.canvas.set_size_hint(100, 100)
+
+        axes = self.figure.subplots(1, 3)
+
+        sns.violinplot(data=voxels, x="Segment", y="Intensity", hue="Segment",
+                       palette=palette, legend=False, cut=0, inner="quartile",
+                       ax=axes[0])
+        axes[0].set_title("Intensity distribution")
+        axes[0].set_xlabel("")
+
+        sns.kdeplot(data=voxels, x="Intensity", hue="Segment", palette=palette,
+                    fill=True, common_norm=False, alpha=0.4, ax=axes[1])
+        axes[1].set_title("Intensity density")
+        sns.move_legend(axes[1], "upper right", title=None, frameon=False, fontsize="small")
+
+        sns.barplot(data=summary, x="Segment", y="Volume (cm3)", hue="Segment",
+                    palette=palette, legend=False, ax=axes[2])
+        for container in axes[2].containers:
+            axes[2].bar_label(container, fmt="%.0f", fontsize="small")
+        axes[2].set_title("Segment volume")
+        axes[2].set_xlabel("")
+        axes[2].margins(y=0.18)  # headroom for the bar labels
+
+        # Angle the segment names so that they do not overlap in a narrow pane.
+        for axis in (axes[0], axes[2]):
+            for label in axis.get_xticklabels():
+                label.set_rotation(20)
+                label.set_horizontalalignment("right")
+
+        self.canvas.draw_idle()
+
+    def addToPlotView(self):
+        """Replace the VTK plot view of the Four-Up Plot layout with this canvas."""
+        plotWidget = slicer.app.layoutManager().plotWidget(0)
+        plotWidget.plotView().hide()
+        plotWidget.layout().addWidget(self.canvas.get_widget())
+        plotWidget.layout().addWidget(self.toolbar.get_widget())
+
+    def removeFromPlotView(self):
+        plotWidget = slicer.app.layoutManager().plotWidget(0)
+        self.canvas.get_widget().setParent(None)
+        self.toolbar.get_widget().setParent(None)
+        plotWidget.plotView().show()
+
+
+# --- demo -------------------------------------------------------------------
+volumeNode = SampleData.SampleDataLogic().downloadMRHead()
+segmentationNode, segmentIds = buildTissueSegmentation(volumeNode)
+summary, voxels, palette = collectStatistics(segmentationNode, volumeNode, segmentIds)
+
+layoutManager = slicer.app.layoutManager()
+layoutManager.setLayout(slicer.vtkMRMLLayoutNode.SlicerLayoutFourUpPlotView)
+slicer.util.setSliceViewerLayers(background=volumeNode, fit=True)
+# Hide the background segment in the slice views so the head stays readable.
+segmentationNode.GetDisplayNode().SetSegmentVisibility(segmentIds[2], False)
+
+# Keep a reference so that the widgets stay alive.
+slicer.modules.SegmentStatisticsPlotDemo = SegmentStatisticsPlot(summary, voxels, palette)
+slicer.modules.SegmentStatisticsPlotDemo.addToPlotView()
+
+print(summary.to_string(index=False))
+```
+
+Notes:
+
+- The `Image` and `Head` segments are only scaffolds. Deriving `Background` from `Image`
+  rather than inverting `Head` keeps it clipped to the volume, so the three segment volumes
+  add up to the volume of the image.
+- Voxel intensities are subsampled before plotting; the distribution plots do not become
+  more informative from millions of points, but they do become much slower.
+- Avoid calling `CreateClosedSurfaceRepresentation()` on a segment as large and noisy as
+  `Background`: building that mesh takes a very long time.
+
+Call `slicer.modules.SegmentStatisticsPlotDemo.removeFromPlotView()` to restore the regular
+VTK plot view.
+
 #### Non-interactive plot
 
 Use the `Agg` backend to render a figure to an image file without showing a window:
