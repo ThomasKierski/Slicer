@@ -261,6 +261,7 @@ class _CanvasWidget(qt.QWidget):
     def __init__(self, canvas):
         qt.QWidget.__init__(self)
         self._canvas = canvas
+        self._size_hint = None
         self.setMouseTracking(True)
         self.setFocusPolicy(qt.Qt.StrongFocus)
         self.setAttribute(qt.Qt.WA_OpaquePaintEvent)
@@ -298,6 +299,8 @@ class _CanvasWidget(qt.QWidget):
         canvas._on_resize(event.size().width(), event.size().height())
 
     def sizeHint(self):
+        if self._size_hint is not None:
+            return self._size_hint
         canvas = self._canvas
         if canvas is None:
             return qt.QSize(640, 480)
@@ -453,6 +456,20 @@ class FigureCanvasSlicer(FigureCanvasAgg):
 
     #: The ``QWidget`` that displays this canvas.
     widget = property(get_widget)
+
+    def set_size_hint(self, width=None, height=None):
+        """Override the preferred size the canvas widget reports to Qt.
+
+        By default the widget reports the figure size, which makes it claim a
+        large share of the space when it is embedded next to other widgets.
+        Pass a small size to let the surrounding layout drive the geometry, or
+        ``None`` to restore the default behavior.
+        """
+        if width is None or height is None:
+            self._widget._size_hint = None
+        else:
+            self._widget._size_hint = qt.QSize(int(width), int(height))
+        self._widget.updateGeometry()
 
     # -- rendering ---------------------------------------------------------
     def _update_device_pixel_ratio(self):

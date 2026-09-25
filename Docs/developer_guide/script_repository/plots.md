@@ -131,6 +131,127 @@ self.layout.addWidget(toolbar.get_widget())
 Keep a reference to `canvas` (for example on `self`) for as long as the plot is displayed.
 Call `canvas.draw_idle()` after modifying the figure to schedule a repaint.
 
+By default the canvas reports the figure size as its preferred size, so it claims a large
+share of a shared layout. Call `canvas.set_size_hint(width, height)` with a small size to
+let the surrounding layout drive the geometry instead, or `canvas.set_size_hint()` to
+restore the default.
+
+#### Interactive plot in the Four-Up Plot layout
+
+This example replaces the VTK plot view of the `Four-Up Plot` layout with an interactive
+Matplotlib figure, and wires it to the scene in both directions:
+
+- scrolling the red slice view updates the histogram of the slice that is actually displayed,
+- dragging a range over the histogram applies it as the window/level of the volume.
+
+```python
+import numpy as np
+import vtk
+from vtk.util import numpy_support
+import SampleData
+
+try:
+  import matplotlib
+except ModuleNotFoundError:
+  slicer.packaging.pip_install("matplotlib")
+  import matplotlib
+
+import slicer.matplotlibbackend
+slicer.matplotlibbackend.enable()
+
+from matplotlib.figure import Figure
+from matplotlib.widgets import SpanSelector
+from slicer.matplotlibbackend import FigureCanvasSlicer, NavigationToolbar2Slicer
+
+
+class SliceHistogramPlot:
+    """Interactive Matplotlib histogram of the slice currently shown in a slice view."""
+
+    def __init__(self, volumeNode, sliceViewName="Red"):
+        self.volumeNode = volumeNode
+        self.sliceLogic = slicer.app.layoutManager().sliceWidget(sliceViewName).sliceLogic()
+        self.sliceNode = self.sliceLogic.GetSliceNode()
+
+        self.figure = Figure(tight_layout=True)
+        self.axes = self.figure.add_subplot(111)
+        self.canvas = FigureCanvasSlicer(self.figure)
+        self.toolbar = NavigationToolbar2Slicer(self.canvas)
+        # Let the Slicer layout drive the size instead of the figure size.
+        self.canvas.set_size_hint(100, 100)
+
+        # Drag over the histogram to apply that intensity range as window/level.
+        self.spanSelector = SpanSelector(
+            self.axes, self.onIntensityRangeSelected, "horizontal",
+            useblit=True, props=dict(alpha=0.3, facecolor="tab:orange"),
+            interactive=True, drag_from_anywhere=True)
+
+        self.sliceObserver = self.sliceNode.AddObserver(
+            vtk.vtkCommand.ModifiedEvent, self.onSliceModified)
+        self.update()
+
+    def addToPlotView(self):
+        """Replace the VTK plot view of the Four-Up Plot layout with this canvas."""
+        plotWidget = slicer.app.layoutManager().plotWidget(0)
+        plotWidget.plotView().hide()
+        plotWidget.layout().addWidget(self.canvas.get_widget())
+        plotWidget.layout().addWidget(self.toolbar.get_widget())
+
+    def removeFromPlotView(self):
+        self.sliceNode.RemoveObserver(self.sliceObserver)
+        plotWidget = slicer.app.layoutManager().plotWidget(0)
+        self.canvas.get_widget().setParent(None)
+        self.toolbar.get_widget().setParent(None)
+        plotWidget.plotView().show()
+
+    def currentSliceArray(self):
+        """Voxels of the reslice actually displayed, for any slice orientation."""
+        reslice = self.sliceLogic.GetBackgroundLayer().GetReslice()
+        reslice.Update()
+        scalars = reslice.GetOutput().GetPointData().GetScalars()
+        if scalars is None:
+            return None
+        return numpy_support.vtk_to_numpy(scalars)
+
+    def onSliceModified(self, caller=None, event=None):
+        self.update()
+
+    def onIntensityRangeSelected(self, minIntensity, maxIntensity):
+        if maxIntensity <= minIntensity:
+            return
+        displayNode = self.volumeNode.GetDisplayNode()
+        displayNode.AutoWindowLevelOff()
+        displayNode.SetWindowLevelMinMax(minIntensity, maxIntensity)
+
+    def update(self):
+        voxels = self.currentSliceArray()
+        self.axes.clear()
+        if voxels is not None and voxels.size:
+            # Ignore the zero-valued background that reslicing introduces.
+            voxels = voxels[voxels > 0]
+        if voxels is not None and voxels.size:
+            self.axes.hist(voxels, bins=80, color="tab:blue")
+        self.axes.set_xlabel("Intensity")
+        self.axes.set_ylabel("Voxel count")
+        self.axes.set_title("Slice offset %.1f mm - drag to set window/level"
+                            % self.sliceNode.GetSliceOffset())
+        self.axes.grid(True, alpha=0.3)
+        self.canvas.draw_idle()
+
+
+layoutManager = slicer.app.layoutManager()
+layoutManager.setLayout(slicer.vtkMRMLLayoutNode.SlicerLayoutFourUpPlotView)
+
+volumeNode = SampleData.SampleDataLogic().downloadMRHead()
+slicer.util.setSliceViewerLayers(background=volumeNode, fit=True)
+
+# Keep a reference so that the object and its observers stay alive.
+slicer.modules.SliceHistogramPlotDemo = SliceHistogramPlot(volumeNode, "Red")
+slicer.modules.SliceHistogramPlotDemo.addToPlotView()
+```
+
+Call `slicer.modules.SliceHistogramPlotDemo.removeFromPlotView()` to remove the observer
+and restore the regular VTK plot view.
+
 #### Non-interactive plot
 
 Use the `Agg` backend to render a figure to an image file without showing a window:

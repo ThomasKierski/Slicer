@@ -210,6 +210,21 @@ class MatplotlibBackendTest(unittest.TestCase):
         self.assertAlmostEqual(self.figure.get_size_inches()[0], 700 * ratio / dpi, places=3)
         self.assertAlmostEqual(self.figure.get_size_inches()[1], 500 * ratio / dpi, places=3)
 
+    def test_size_hint_override(self):
+        """The preferred size reported to Qt can be overridden and restored."""
+        widget = self.canvas.get_widget()
+        # sizeHint/minimumSizeHint are overridden in Python, so they are called.
+        self.assertEqual(widget.sizeHint().width(), self.canvas.get_width_height()[0])
+
+        self.canvas.set_size_hint(120, 90)
+        self.assertEqual(widget.sizeHint().width(), 120)
+        self.assertEqual(widget.sizeHint().height(), 90)
+        # A small hint must not prevent the widget from growing.
+        self.assertLessEqual(widget.minimumSizeHint().height(), 90)
+
+        self.canvas.set_size_hint()
+        self.assertEqual(widget.sizeHint().width(), self.canvas.get_width_height()[0])
+
     def test_saving_figure(self):
         """Rendering to a file still works while the interactive backend is active."""
         import os
