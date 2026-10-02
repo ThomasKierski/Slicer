@@ -54,17 +54,12 @@ class and overriding its virtual methods.
 """
 
 import sys
-import weakref
 
 import matplotlib
 
-# MouseEvent(buttons=...), used to report the pressed buttons on motion, was added in 3.10.
-MINIMUM_MATPLOTLIB_VERSION = (3, 10)
-if tuple(matplotlib.__version_info__[:2]) < MINIMUM_MATPLOTLIB_VERSION:
-    raise ImportError(
-        "slicer.matplotlibbackend requires matplotlib >= %d.%d, but %s is installed. "
-        "Upgrade it with slicer.packaging.pip_ensure('matplotlib>=%d.%d') and restart Slicer."
-        % (*MINIMUM_MATPLOTLIB_VERSION, matplotlib.__version__, *MINIMUM_MATPLOTLIB_VERSION))
+from slicer._matplotlibcommon import MINIMUM_MATPLOTLIB_VERSION, require_matplotlib, weak_callback  # noqa: F401
+
+require_matplotlib("slicer.matplotlibbackend")
 
 from matplotlib import backend_tools, cbook
 from matplotlib._pylab_helpers import Gcf
@@ -117,19 +112,9 @@ def _value(obj, name, *args):
 def _connect_weakly(sender, signal, method, *args):
     """Connect ``signal`` to the bound ``method`` without keeping its object alive.
 
-    PythonQt connections hold a strong reference to the Python callable, and that
-    reference lives on the C++ side where the garbage collector cannot see it. A
-    connection to a bound method of an object that also owns the sender therefore
-    forms a cycle that is never collected. The slot is a no-op once the object is gone.
+    See :func:`slicer._matplotlibcommon.weak_callback` for why this is needed.
     """
-    ref = weakref.WeakMethod(method)
-
-    def slot(*signal_args):
-        target = ref()
-        if target is not None:
-            target(*args)
-
-    sender.connect(signal, slot)
+    sender.connect(signal, weak_callback(method, *args))
 
 
 def _int(value):

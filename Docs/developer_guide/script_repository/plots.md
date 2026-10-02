@@ -146,13 +146,22 @@ the scene in both directions:
 - scrolling the red slice view updates the histogram of the slice that is actually displayed,
 - dragging a range over the histogram applies it as the window/level of the volume.
 
-The figure is not placed inside a VTK plot view. Instead, a view factory provides a custom
-`<matplotlibview>` layout element, the same way the DICOM module adds its browser to the
-view layout, and a custom layout puts that element where `Four-Up Plot` has its plot view.
+The figure is shown with `slicer.matplotlibview.showFigure()`. It draws the figure into a
+VTK render view that a view factory places in the layout as a custom `<matplotlibview>`
+element, the same way the DICOM module adds its browser to the view layout. If the current
+layout has no such element, `showFigure()` switches to a Four-Up layout with the figure in
+place of the 3D view (`slicer.matplotlibview.FOUR_UP_LAYOUT_ID`). Use the same element in
+your own layout descriptions to place the figure elsewhere.
+
+:::{note}
+The figure canvas of the view, `slicer.matplotlibvtk.FigureCanvasVTK`, gets its input and
+timers from the VTK render window interactor and does not use Qt, so it can be hosted by
+any VTK render window. To embed a figure in a module panel, use the Qt canvas shown in the
+previous example instead: every VTK view has its own OpenGL context.
+:::
 
 ```python
 import numpy as np
-import qt
 import vtk
 from vtk.util import numpy_support
 import SampleData
@@ -160,74 +169,9 @@ import SampleData
 import slicer.packaging
 slicer.packaging.pip_ensure("matplotlib>=3.10")
 
-import slicer.matplotlibbackend
-slicer.matplotlibbackend.enable()
-
 from matplotlib.figure import Figure
 from matplotlib.widgets import SpanSelector
-from slicer.matplotlibbackend import FigureCanvasSlicer, NavigationToolbar2Slicer
-
-# Built-in layout IDs are all below 100, so any large number can be used.
-MATPLOTLIB_LAYOUT_ID = 1001
-MATPLOTLIB_LAYOUT = """
-<layout type="vertical">
- <item>
-  <layout type="horizontal">
-   <item>
-    <view class="vtkMRMLSliceNode" singletontag="Red">
-     <property name="orientation" action="default">Axial</property>
-     <property name="viewlabel" action="default">R</property>
-     <property name="viewcolor" action="default">#F34A33</property>
-    </view>
-   </item>
-   <item><matplotlibview></matplotlibview></item>
-  </layout>
- </item>
- <item>
-  <layout type="horizontal">
-   <item>
-    <view class="vtkMRMLSliceNode" singletontag="Green">
-     <property name="orientation" action="default">Coronal</property>
-     <property name="viewlabel" action="default">G</property>
-     <property name="viewcolor" action="default">#6EB04B</property>
-    </view>
-   </item>
-   <item>
-    <view class="vtkMRMLSliceNode" singletontag="Yellow">
-     <property name="orientation" action="default">Sagittal</property>
-     <property name="viewlabel" action="default">Y</property>
-     <property name="viewcolor" action="default">#EDD54C</property>
-    </view>
-   </item>
-  </layout>
- </item>
-</layout>
-"""
-
-
-def showInMatplotlibView(*widgets):
-    """Show the widgets in the <matplotlibview> pane and switch to its layout."""
-    layoutManager = slicer.app.layoutManager()
-    factory = getattr(slicer.modules, "MatplotlibViewFactory", None)
-    if factory is None:
-        # The factory hands the same container to the layout manager whenever the layout
-        # contains a <matplotlibview> element; the layout manager takes ownership of it.
-        container = qt.QWidget()
-        qt.QVBoxLayout(container).setContentsMargins(0, 0, 0, 0)
-        factory = slicer.qSlicerSingletonViewFactory()
-        factory.setTagName("matplotlibview")
-        factory.setWidget(container)
-        layoutManager.registerViewFactory(factory)
-        layoutManager.layoutLogic().GetLayoutNode().AddLayoutDescription(
-            MATPLOTLIB_LAYOUT_ID, MATPLOTLIB_LAYOUT)
-        slicer.modules.MatplotlibViewFactory = factory
-    layout = factory.widget().layout()
-    while layout.count():
-        layout.takeAt(0).widget().setParent(None)
-    for widget in widgets:
-        layout.addWidget(widget)
-    layoutManager.setLayout(MATPLOTLIB_LAYOUT_ID)
-
+import slicer.matplotlibview
 
 class SliceHistogramPlot:
     """Interactive Matplotlib histogram of the slice currently shown in a slice view."""
@@ -239,10 +183,9 @@ class SliceHistogramPlot:
 
         self.figure = Figure(tight_layout=True)
         self.axes = self.figure.add_subplot(111)
-        self.canvas = FigureCanvasSlicer(self.figure)
-        self.toolbar = NavigationToolbar2Slicer(self.canvas)
-        # Let the Slicer layout drive the size instead of the figure size.
-        self.canvas.set_size_hint(100, 100)
+        # Show the figure next to the slice views. It now has the canvas that the
+        # span selector connects to.
+        self.canvas = slicer.matplotlibview.showFigure(self.figure)
 
         # Drag over the histogram to apply that intensity range as window/level.
         self.spanSelector = SpanSelector(
@@ -257,8 +200,7 @@ class SliceHistogramPlot:
     def cleanup(self):
         """Stop following the slice view and remove the plot from the layout."""
         self.sliceNode.RemoveObserver(self.sliceObserver)
-        self.canvas.get_widget().setParent(None)
-        self.toolbar.get_widget().setParent(None)
+        slicer.matplotlibview.viewWidget().setFigure(None)
 
     def currentSliceArray(self):
         """Voxels of the reslice actually displayed, for any slice orientation."""
@@ -295,21 +237,16 @@ class SliceHistogramPlot:
         self.canvas.draw_idle()
 
 
-layoutManager = slicer.app.layoutManager()
-layoutManager.setLayout(slicer.vtkMRMLLayoutNode.SlicerLayoutFourUpView)
-
 volumeNode = SampleData.SampleDataLogic().downloadMRHead()
 slicer.util.setSliceViewerLayers(background=volumeNode, fit=True)
 
 # Keep a reference so that the object and its observers stay alive.
 slicer.modules.SliceHistogramPlotDemo = SliceHistogramPlot(volumeNode, "Red")
-showInMatplotlibView(slicer.modules.SliceHistogramPlotDemo.canvas.get_widget(),
-                     slicer.modules.SliceHistogramPlotDemo.toolbar.get_widget())
 ```
 
 Call `slicer.modules.SliceHistogramPlotDemo.cleanup()` to remove the observer and the plot.
 The custom layout stays available, so any figure can be shown in it later by calling
-`showInMatplotlibView()` again.
+`slicer.matplotlibview.showFigure()` again.
 
 #### Segment statistics with seaborn
 
@@ -324,9 +261,8 @@ statistics with the `SegmentStatistics` module, and shows them as an interactive
 dashboard next to the slice views. The plot colors are taken from the segments themselves,
 so they match the slice views.
 
-The dashboard is shown with `showInMatplotlibView()` from the
-[previous example](#interactive-plot-in-a-four-up-layout), so run the definitions of
-`MATPLOTLIB_LAYOUT_ID`, `MATPLOTLIB_LAYOUT` and `showInMatplotlibView()` first.
+The dashboard is shown in the layout with `slicer.matplotlibview.showFigure()`, as in the
+[previous example](#interactive-plot-in-a-four-up-layout).
 
 ```python
 import numpy as np
@@ -340,12 +276,8 @@ slicer.packaging.pip_ensure("matplotlib>=3.10 seaborn pandas")
 import pandas as pd
 import seaborn as sns
 
-import slicer.matplotlibbackend
-
-slicer.matplotlibbackend.enable()
-
 from matplotlib.figure import Figure
-from slicer.matplotlibbackend import FigureCanvasSlicer, NavigationToolbar2Slicer
+import slicer.matplotlibview
 
 
 def buildTissueSegmentation(volumeNode):
@@ -455,10 +387,6 @@ class SegmentStatisticsPlot:
         # "paper" context keeps the labels readable in a small layout pane.
         sns.set_theme(style="whitegrid", context="paper")
         self.figure = Figure(constrained_layout=True)
-        self.canvas = FigureCanvasSlicer(self.figure)
-        self.toolbar = NavigationToolbar2Slicer(self.canvas)
-        # Let the Slicer layout drive the size instead of the figure size.
-        self.canvas.set_size_hint(100, 100)
 
         axes = self.figure.subplots(1, 3)
 
@@ -487,7 +415,7 @@ class SegmentStatisticsPlot:
                 label.set_rotation(20)
                 label.set_horizontalalignment("right")
 
-        self.canvas.draw_idle()
+        self.canvas = slicer.matplotlibview.showFigure(self.figure)
 
 
 # --- demo -------------------------------------------------------------------
@@ -499,10 +427,8 @@ slicer.util.setSliceViewerLayers(background=volumeNode, fit=True)
 # Hide the background segment in the slice views so the head stays readable.
 segmentationNode.GetDisplayNode().SetSegmentVisibility(segmentIds[2], False)
 
-# Keep a reference so that the widgets stay alive.
+# Keep a reference to the dashboard for use from the Python console.
 slicer.modules.SegmentStatisticsPlotDemo = SegmentStatisticsPlot(summary, voxels, palette)
-showInMatplotlibView(slicer.modules.SegmentStatisticsPlotDemo.canvas.get_widget(),
-                     slicer.modules.SegmentStatisticsPlotDemo.toolbar.get_widget())
 slicer.util.resetSliceViews()
 
 print(summary.to_string(index=False))
@@ -518,8 +444,8 @@ Notes:
 - Avoid calling `CreateClosedSurfaceRepresentation()` on a segment as large and noisy as
   `Background`: building that mesh takes a very long time.
 
-Call `slicer.modules.SegmentStatisticsPlotDemo.canvas.get_widget().setParent(None)` (and
-the same for `toolbar`) to remove the dashboard from the layout.
+Call `slicer.matplotlibview.viewWidget().setFigure(None)` to remove the dashboard from the
+view.
 
 #### Non-interactive plot
 

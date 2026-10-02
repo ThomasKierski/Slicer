@@ -1,10 +1,13 @@
 
 set(Slicer_PYTHON_SCRIPTS
   slicer/__init__
+  slicer/_matplotlibcommon
   slicer/cli
   slicer/i18n
   slicer/logic
   slicer/matplotlibbackend
+  slicer/matplotlibview
+  slicer/matplotlibvtk
   slicer/parameterNodeWrapper/__init__
   slicer/parameterNodeWrapper/default
   slicer/parameterNodeWrapper/guiCreation
